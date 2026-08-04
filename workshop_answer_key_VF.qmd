@@ -1,0 +1,339 @@
+---
+title: "Using Polygenic Scores in Epidemiological Practice — Instructor Answer Key"
+subtitle: "Interaction Analyses, Mediation Analyses, and a Family-Design Check"
+author: "Gabin Drouard"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    code-fold: false
+    theme: flatly
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+
+> Requires: `ggplot2`, `dplyr`, `mediation`.
+> Install missing packages with `install.packages(c("ggplot2","dplyr","mediation"))`.
+
+**Learning objectives:** 
+
+- Distinguish an interaction (effect modification) from a mediation (mechanism), conceptually and statistically.
+- Fit, interpret, and plot an interaction model in R.
+- Decompose a total effect into direct and indirect (mediated) components.
+- Understand how a family (within-sibship) design can protect against confounded PRS associations.
+
+```{r setup}
+library(ggplot2)
+library(dplyr)
+
+# load individual and family data
+data     <- read.csv("prs_cookies_happiness_individuals.csv")   # Parts 1-3
+data_fam <- read.csv("prs_cookies_happiness_families.csv")      # Part 4
+```
+
+# Part 1 — Warm-up: exploring the data
+
+*Dataset: `prs_cookies_happiness_individuals.csv` (5,000 unrelated individuals).*
+
+## Q1.1 — Load the data and produce summary statistics
+
+```{r q1-1}
+str(data)
+nrow(data)
+
+summary(data[, c("PRS_sugar","exercise_hours","cookies_per_year","happiness_score")])
+sapply(data[, c("PRS_sugar","exercise_hours","cookies_per_year","happiness_score")], sd)
+```
+
+**Answer.** 5,000 rows, one per individual, no `family_id` column here; this
+dataset has no family structure by design. `PRS_sugar` is standardized and corrected for population stratification (mean ≈ 0, SD ≈ 1), as expected for a PRS. `exercise_hours` averages around 5 h/week. `cookies_per_year` centers around 400–500. `happiness_score` sits in the 50–70 range, clipped to [0, 100]. 
+
+## Q1.2 — Histogram and scatterplot
+
+```{r q1-2}
+ggplot(data, aes(x = PRS_sugar)) +
+  geom_histogram(bins = 30, fill = "#2f6ea1", color = "white") +
+  labs(title = "Distribution of PRS_sugar")
+
+ggplot(data, aes(x = PRS_sugar, y = cookies_per_year)) +
+  geom_point(alpha = 0.15) +
+  geom_smooth(method = "lm", color = "#c85a28") +
+  labs(title = "Cookies per year vs. PRS_sugar")
+```
+
+**Answer.** `PRS_sugar` is approximately normal, as expected from a standardized
+score. The scatterplot shows a positive linear trend; higher PRS is associated with
+more cookies eaten per year, but with substantial scatter, and the true relationship
+also depends on exercise (Part 2).
+
+---
+
+# Part 2 — Interaction analyses
+
+*Still `prs_cookies_happiness_individuals.csv`.*
+
+## Q2.1 — Fit the interaction model
+
+Model: $\text{cookies}_i = \beta_0 + \beta_1 \text{PRS}_i + \beta_2 \text{exercise}_i + \beta_3 (\text{PRS}_i \times \text{exercise}_i) + \varepsilon_i$
+
+```{r q2-1}
+m_int <- lm(cookies_per_year ~ PRS_sugar * exercise_hours, data = data)
+summary(m_int)
+```
+
+## Q2.2 — Interpret the interaction coefficient
+
+**Answer.** The `PRS_sugar:exercise_hours` coefficient is negative and highly
+significant. This means the positive effect of the PRS on cookie consumption gets
+*weaker* as weekly exercise increases; exercise buffers the genetic effect. At zero
+exercise, the PRS effect is largest; at high exercise, it shrinks substantially.
+
+## Q2.3 — Simple slopes at low / average / high exercise
+
+```{r q2-3}
+ex_levels <- c(mean(data$exercise_hours) - sd(data$exercise_hours),
+               mean(data$exercise_hours),
+               mean(data$exercise_hours) + sd(data$exercise_hours))
+
+b <- coef(m_int)
+slopes <- b["PRS_sugar"] + b["PRS_sugar:exercise_hours"] * ex_levels
+data.frame(exercise_level = c("Low (-1 SD)","Average","High (+1 SD)"),
+           exercise_hours = round(ex_levels, 2),
+           prs_slope = round(slopes, 1))
+```
+
+**Answer.** The PRS→cookies slope roughly halve going from low to
+high exercise. This is the buffering pattern in numeric form.
+
+## Q2.4 — Plot the interaction
+
+```{r q2-4}
+data$ex_group <- cut(data$exercise_hours,
+                      breaks = quantile(data$exercise_hours, c(0, 1/3, 2/3, 1)),
+                      labels = c("Low", "Average", "High"),
+                      include.lowest = TRUE)
+
+ggplot(data, aes(x = PRS_sugar, y = cookies_per_year, color = ex_group)) +
+  geom_smooth(method = "lm", se = F) +
+  labs(color = "Exercise level",
+       title = "PRS -> cookies, moderated by exercise")
+```
+
+**Answer.** Three lines with different slopes, steepest for the "Low" exercise
+group and flattest for "High", visually confirming the simple-slopes numbers above.
+
+## Q2.5 — Conceptual: scale of the interaction
+
+**Answer.** Not a contradiction. Interactions are scale-dependent: an interaction
+that is clearly present on an additive/linear scale (the model above) can vanish, or
+even reverse. Binarizing a continuous outcome also throws away information and reduces power specifically for interaction terms (which are already harder to detect than main effects). The two analyses are simply asking different questions of the same data: "does exercise change the absolute number of extra cookies per PRS-SD?" (additive,yes) vs. "does exercise change the relative odds of high vs. low consumption?" (multiplicative, possibly no). Both can be true simultaneously.
+
+---
+
+# Part 3 — Mediation analyses
+
+*Still `prs_cookies_happiness_individuals.csv`.*
+
+## Q3.1 — Total effect
+
+```{r q3-1}
+m_total <- lm(happiness_score ~ PRS_sugar, data = data)
+summary(m_total)$coefficients
+```
+
+**Answer.** The total effect of `PRS_sugar` on `happiness_score` is negative. This is the effect of the PRS on happiness, ignoring any pathway.
+
+## Q3.2 — Path a (PRS → cookies)
+
+```{r q3-2}
+m_a <- lm(cookies_per_year ~ PRS_sugar, data = data)
+summary(m_a)$coefficients
+```
+
+**Answer.** Positive and significant.
+
+## Q3.3 — Path b / direct effect
+
+```{r q3-3}
+m_bcp <- lm(happiness_score ~ cookies_per_year + PRS_sugar, data = data)
+summary(m_bcp)$coefficients
+```
+
+**Answer.** `cookies_per_year` is negative (≈ −0.02: more cookies,
+slightly lower happiness) and the residual direct effect of `PRS_sugar` (`c'`)
+is also negative; a real direct pathway from PRS to happiness that does *not* go through cookies.
+
+## Q3.4 — Indirect effect and proportion mediated
+
+```{r q3-4}
+a  <- coef(m_a)["PRS_sugar"]
+b  <- coef(m_bcp)["cookies_per_year"]
+cprime <- coef(m_bcp)["PRS_sugar"]
+ctotal <- coef(m_total)["PRS_sugar"]
+
+indirect <- a * b
+prop_mediated <- indirect / ctotal
+
+data.frame(total_effect = ctotal, path_a = a, path_b = b,
+           direct_effect = cprime, indirect_effect = indirect,
+           proportion_mediated = prop_mediated)
+```
+
+**Answer.** Roughly 50% of the total PRS→happiness effect is mediated through
+cookie consumption; the remainder is a direct effect. This is a case of *partial*
+mediation; cookies are one real pathway, but not the whole story.
+
+## Q3.5 — When using the mediation package, do you recover similar results?
+
+```{r q3-5}
+library(mediation)
+med_out <- mediate(m_a, m_bcp, treat = "PRS_sugar",
+                    mediator = "cookies_per_year", boot = TRUE, sims = 500)
+summary(med_out)
+```
+
+**Answer.** Yes: with a continuous outcome and no exposure-mediator interaction
+term, the counterfactual point estimates from `mediate()` (ACME, ADE, total effect)
+should match the manual product-of-coefficients numbers from Q3.1–Q3.4 almost
+exactly. The main value-add here is the bootstrapped confidence intervals, and the
+fact that this same function generalizes cleanly to binary/survival outcomes, where
+the manual approach breaks down (see the DAG/assumptions discussion above).
+
+---
+
+# Part 4 — A family-design robustness check
+
+*Switch datasets: `prs_cookies_happiness_families.csv` (1,500 families x 2 siblings = 3,000 individuals).*
+
+This section deliberately violates assumption (3) from Part 3; no unmeasured
+$M \to Y$ confounding via a family-level variable, `family_treat_culture`,
+household norms around treats/snacking, which affects both `cookies_per_year` and
+`happiness_score` directly. Unlike the earlier design, it does **not** touch
+`PRS_sugar` at all.
+
+The target is now `cookies_per_year -> happiness_score` — path *b* from Q3.3 — not
+the PRS total effect. Ground truth from Part 3, Q3.3: path *b* ≈ **−0.02**.
+
+```{r q4-load}
+str(data_fam)
+length(unique(data_fam$family_id))
+```
+
+**Before touching confounding, a separate warning about clustering.** All models
+below except the within-family one treat 3,000 rows as independent observations,
+but siblings share unmeasured family-level factors, so their residuals are
+correlated. This makes ordinary `lm()` standard errors too small (biasing $p$-values / CIs), *regardless of whether any confounding is present*. This is a distinct problem from omitted-variable bias: confounding biases the point estimate, clustering biases the uncertainty around it. Family fixed effects fix both at once here; in general, if you can't use fixed effects, at least use cluster-robust SEs (`sandwich`/`clubSandwich`) rather than trusting the naive ones.
+
+## Q4.1 — Naive model (same spec as Q3.3)
+
+```{r q4-1}
+m_naive <- lm(happiness_score ~ cookies_per_year + PRS_sugar, data = data_fam)
+summary(m_naive)$coefficients
+```
+
+**Answer.** The `cookies_per_year` coefficient comes out **positive**. It is a full sign flip from the true path *b* ≈ −0.02 found in Part 3. Naively, this dataset would lead you to conclude eating
+more cookies makes people *happier*. That's the confounder at work: households with
+a strong "treat culture" both serve more cookies and report higher happiness for
+unrelated reasons, and the naive model can't tell that apart from a genuine effect
+of cookies on happiness.
+
+## Q4.2 — Within-family model (family fixed effects)
+
+```{r q4-2}
+m_within <- lm(happiness_score ~ cookies_per_year + PRS_sugar + factor(family_id), data = data_fam)
+# reporting the cookies_per_year / PRS_sugar rows while dropping the family dummies
+summary(m_within)$coefficients[c("cookies_per_year", "PRS_sugar"), ]
+```
+
+**Answer.** The `cookies_per_year` coefficient flipped back to **negative**, closely matching Part 3's path *b* (≈ −0.02) despite Part 3 and Part 4 being two entirely separate simulated samples.
+
+## Q4.3 — Compare naive vs. within-family, and to Part 3's path b
+
+**Answer.** Naive ≈ +0.024 vs. within-family ≈ −0.020: not just a
+difference in magnitude, but a full **sign reversal**, and the within-family number
+lands right back on Part 3's ≈ −0.020. That's about as clear a demonstration of
+family-level confounding as this kind of exercise can give: the naive model doesn't
+just underestimate the true (harmful) effect of cookies on happiness, it gets the
+*direction* wrong, and the within-family design corrects it completely.
+
+## Q4.4 — Direct adjustment for the (unusually) observed confounder
+
+Unlike almost any real analysis, this toy dataset actually hands you the
+confounder: `family_treat_culture`. Let's check the within-family design against a
+more familiar approach, just adjusting for the confounder directly.
+
+```{r q4-4}
+m_direct <- lm(happiness_score ~ cookies_per_year + PRS_sugar + family_treat_culture, data = data_fam)
+summary(m_direct)$coefficients
+
+data.frame(
+  model = c("Naive", "Direct adjustment for family_treat_culture", "Within-family (fixed effects)"),
+  cookies_coefficient = round(c(coef(m_naive)["cookies_per_year"],
+                                 coef(m_direct)["cookies_per_year"],
+                                 coef(m_within)["cookies_per_year"]), 4)
+)
+```
+
+**Answer.** The direct-adjustment coefficient lands close to the
+within-family estimate from Q4.2, and both sit on the opposite side of zero from the naive estimate. Two completely different statistical strategies, controlling for the known confounder directly, versus a within-family design that never looks at it at all, converge on essentially the
+same corrected answer.
+
+## Q4.5 — The punchline
+
+**Answer / talking point.** Direct adjustment only worked because I happened to
+hand `family_treat_culture` as a clean, already-measured column. In real
+research, you almost never get that column; the analogous real-world confounders
+(household food culture, shared lifestyle norms, general family wellbeing) aren't
+things you can simply add to a regression, because you can't measure or precisely
+name them. 
+
+## Q4.6 — Bonus: sibling-difference regression
+
+```{r q4-6}
+wide <- data_fam %>%
+  group_by(family_id) %>%
+  summarise(d_cook = diff(cookies_per_year), d_prs = diff(PRS_sugar),
+            d_happy = diff(happiness_score), .groups = "drop")
+
+m_diff <- lm(d_happy ~ d_cook + d_prs, data = wide)
+summary(m_diff)$coefficients
+```
+
+**Answer.** The sibling-difference estimate on `d_cook` closely match both
+the family fixed-effects estimate (Q4.2) and the direct-adjustment estimate (Q4.4); all three negative. They agree in theory because they are mathematically near-equivalent for a two-sibling-per-family design: taking within-family differences and including family fixed effects both eliminate any variable that is constant within family (including `family_treat_culture`, whether or not you actually observe it), leaving only the within-family variation in
+cookies, PRS, and happiness to estimate the slope.
+
+## Q4.7 — Synthesis
+
+**Answer.** No. The Part 3 mediation decomposition should *not* be trusted if it
+had been run on this families dataset without adjustment, precisely because the
+mediator-outcome path (path *b*) is exactly what's confounded here. A family-adjusted mediation analysis would need: (1) a sample of relatives (siblings, or ideally parent-offspring or twin pairs) with exposure, mediator, and outcome all measured; (2) enough sibling pairs per family to estimate within-family variance components with reasonable precision (exactly the same
+data requirement as the family-design methods from yesterday's lecture), not something a standard unrelated-individuals cohort can provide.
+
+---
+
+# Part 5 — Wrap-up discussion
+
+*No code*
+
+## Q5.1 — Moderator vs. mediator in your own research
+
+In-class.
+
+## Q5.2 — Why interaction tests need larger samples
+
+**Answer.** Detecting an interaction with the same power as a main effect typically requires about **4x the sample size**, because the interaction term is estimated from the residual variation left
+after both main effects. Practical implication: a "null" interaction in a modestly-sized study is often simply underpowered rather than good evidence of *no* effect modification.
+
+## Q5.3 — Family designs in your own research
+
+In-class.
+
+---
+
+<div style="text-align:center; font-style:italic; margin-top:2em;">
+End of instructor answer key.
+</div>
